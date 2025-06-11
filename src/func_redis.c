@@ -853,7 +853,7 @@ static char *handle_cli_redis_set(struct ast_cli_entry *e, int cmd, struct ast_c
 
 
     redisReply * reply = NULL;
-    get_safe_redis_context_for_cli_as(redis_context)
+    get_safe_redis_context_for_cli_as(redis_context);
 
     reply = redisLoggedCommand(redis_context,"SET %s %s", args->argv[2], args->argv[3]);
     if (reply == NULL){
