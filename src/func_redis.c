@@ -162,20 +162,32 @@ snprintf (__log_buffer, __LOG_BUFFER_SZ, __VA_ARGS__); \
 ast_debug(1, "%s\n", __log_buffer);
 
 
-#define get_safe_redis_context_for_func_as(name) redisContext * name = NULL;\
-if (!(redis_context = ast_threadstorage_get(&redis_instance, sizeof(redisContext))))\
-{\
-ast_log(LOG_ERROR, "Error retrieving the redis context from thread\n");\
-return -1;\
-}\
+/* For dial-plan functions (return –1 on failure) */
+#define get_safe_redis_context_for_func_as(name)                     \
+    redisContext *name = NULL;                                       \
+    do {                                                             \
+        redisContext **__pp =                                        \
+            ast_threadstorage_get(&redis_instance, sizeof(void *));  \
+        if (!__pp || !(*__pp)) {                                     \
+            ast_log(LOG_ERROR, "No redis context in thread\n");      \
+            return -1;                                               \
+        }                                                            \
+        name = *__pp;                                                \
+    } while (0)
 
 
-#define get_safe_redis_context_for_cli_as(name) redisContext * name = NULL;\
-if (!(redis_context = ast_threadstorage_get(&redis_instance, sizeof(redisContext))))\
-{\
-ast_log(LOG_ERROR, "Error retrieving the redis context from thread\n");\
-return CLI_FAILURE;\
-}\
+/* For CLI helpers (return CLI_FAILURE on failure) */
+#define get_safe_redis_context_for_cli_as(name)                      \
+    redisContext *name = NULL;                                       \
+    do {                                                             \
+        redisContext **__pp =                                        \
+            ast_threadstorage_get(&redis_instance, sizeof(void *));  \
+        if (!__pp || !(*__pp)) {                                     \
+            ast_log(LOG_ERROR, "No redis context in thread\n");      \
+            return CLI_FAILURE;                                      \
+        }                                                            \
+        name = *__pp;                                                \
+    } while (0)
 
 
 #define replyHaveError(reply) (reply != NULL && reply->type == REDIS_REPLY_ERROR)
@@ -200,24 +212,25 @@ AST_THREADSTORAGE_CUSTOM(redis_instance, redis_connect, redis_disconnect)
  */
 static int redis_connect(void * data)
 {
-    redisContext * redis_context = NULL;
-    redis_context = redisConnectWithTimeout(hostname, port, timeout);
-    if (redis_context == NULL) {
-        ast_log(AST_LOG_ERROR,
-                "Couldn't establish connection. Reason: UNKNOWN\n");
+    redisContext *ctx = redisConnectWithTimeout(hostname, port, timeout);
+    if (!ctx || ctx->err) {
+        ast_log(LOG_ERROR, "Redis connect failed: %s\n",
+                ctx ? ctx->errstr : "UNKNOWN");
+        if (ctx)
+            redisFree(ctx);
         return -1;
     }
 
-    if(redis_context->err != 0){
+    if(ctx->err != 0){
         ast_log(AST_LOG_ERROR,
-                "Couldn't establish connection. Reason: %s\n", redis_context->errstr);
+                "Couldn't establish connection. Reason: %s\n", ctx->errstr);
         return -1;
     }
 
     redisReply * reply = NULL;
     if (strnlen(password, STR_CONF_SZ) != 0) {
         ast_log(AST_LOG_DEBUG, "REDIS : Authenticating...\n");
-        reply = redisCommand(redis_context,"AUTH %s", password);
+        reply = redisCommand(ctx,"AUTH %s", password);
         if (replyHaveError(reply)) {
             ast_log(LOG_ERROR, "Unable to authenticate. Reason: %s\n", reply->str);
             return -1;
@@ -228,7 +241,7 @@ static int redis_connect(void * data)
 
     if (strnlen(dbname, STR_CONF_SZ) != 0) {
         ast_log(AST_LOG_DEBUG, "Selecting DB %s\n", dbname);
-        reply = redisLoggedCommand(redis_context,"SELECT %s", dbname);
+        reply = redisLoggedCommand(ctx,"SELECT %s", dbname);
         if (replyHaveError(reply)) {
             ast_log(AST_LOG_ERROR, "Unable to select DB %s. Reason: %s\n", dbname, reply->str);
             return -1;
@@ -237,53 +250,17 @@ static int redis_connect(void * data)
         freeReplyObject(reply);
     }
 
-    memcpy(data, redis_context, sizeof(redisContext));
-    ast_free(redis_context);
+    /* Keep only the pointer in TLS */
+    *(redisContext **)data = ctx;
     return 0;
 }
 
-static void redis_disconnect(void *data){
-    redisContext * redis_context = data;
-
-    if (redis_context == NULL)
-        return;
-
-    if (redis_context->fd > 0)
-        close(redis_context->fd);
-    if (redis_context->obuf != NULL)
-        sdsfree(redis_context->obuf);
-    if (redis_context->reader != NULL){
-        if (redis_context->reader->reply != NULL && redis_context->reader->fn && redis_context->reader->fn->freeObject)
-            redis_context->reader->fn->freeObject(redis_context->reader->reply);
-        if (redis_context->reader->buf != NULL)
-            sdsfree(redis_context->reader->buf);
-        ast_free(redis_context->reader);
-    } // = redisReaderFree(redis_context->reader);
-
-
-#if HIREDIS_MAJOR == 0 && HIREDIS_MINOR > 12
-    if (redis_context->tcp.host)
-        ast_free(redis_context->tcp.host);
-    if (redis_context->tcp.source_addr)
-        ast_free(redis_context->tcp.source_addr);
-    if (redis_context->timeout)
-        ast_free(redis_context->timeout);
-#endif
-
-#if HIREDIS_MAJOR == 0 && HIREDIS_MINOR == 13 && HIREDIS_PATCH == 0
-    if (redis_context->unix.path){
-        ast_free(redis_context->unix.path);
-    }
-#endif
-
-#if HIREDIS_MAJOR == 0 && HIREDIS_MINOR == 13 && HIREDIS_PATCH > 0
-    if (redis_context->unix_sock.path){
-        ast_free(redis_context->unix_sock.path);
-    }
-#endif
-
-    ast_free(redis_context);
-    return;
+static void redis_disconnect(void *data)
+{
+    redisContext *ctx = *(redisContext **)data;
+    if (ctx)
+        redisFree(ctx);
+    *(redisContext **)data = NULL;
 }
 
 /*!
@@ -1003,13 +980,18 @@ static int unload_module(void)
 
     if (ast_true(bgsave)) {
         redisReply * reply = NULL;
-        redisContext * redis_context = NULL;
-        if (!(redis_context = ast_threadstorage_get(&redis_instance, sizeof(redisContext))))
-        {
-            ast_log(AST_LOG_ERROR, "Error retrieving the redis context from thread\n");
+        redisContext **ctxp =
+            ast_threadstorage_get(&redis_instance, sizeof(void *));
+        if (!ctxp || !*ctxp) {
+            ast_log(AST_LOG_ERROR,
+                    "Error retrieving the redis context from thread\n");
             return -1;
         }
-        ast_log(AST_LOG_NOTICE, "Sending BGSAVE before closing connection.\n");
+        /* step 2: dereference once to get the real redisContext * */
+        redisContext *redis_context = *ctxp;
+
+        ast_log(AST_LOG_NOTICE,
+                "Sending BGSAVE before closing connection.\n");
         reply = redisLoggedCommand(redis_context, "BGSAVE");
         ast_log(AST_LOG_NOTICE, "Closing connection.\n");
         freeReplyObject(reply);
