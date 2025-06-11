@@ -626,7 +626,9 @@ static int function_redis_command(struct ast_channel *chan, const char *cmd,
         }
     }
 
-    freeReplyObject(reply);
+    if (reply) {
+        freeReplyObject(reply);
+    }
     pbx_builtin_setvar_helper(chan, "REDIS_RESULT", return_buffer);
 
     return 0;
