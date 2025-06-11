@@ -233,6 +233,8 @@ static int redis_connect(void * data)
         reply = redisCommand(ctx,"AUTH %s", password);
         if (replyHaveError(reply)) {
             ast_log(LOG_ERROR, "Unable to authenticate. Reason: %s\n", reply->str);
+            freeReplyObject(reply);
+            redisFree(ctx);
             return -1;
         }
         ast_log(AST_LOG_DEBUG, "REDIS : Authenticated.\n");
@@ -244,6 +246,8 @@ static int redis_connect(void * data)
         reply = redisLoggedCommand(ctx,"SELECT %s", dbname);
         if (replyHaveError(reply)) {
             ast_log(AST_LOG_ERROR, "Unable to select DB %s. Reason: %s\n", dbname, reply->str);
+            freeReplyObject(reply);
+            redisFree(ctx);
             return -1;
         }
         ast_log(AST_LOG_DEBUG, "Database %s selected.\n", dbname);
@@ -621,6 +625,8 @@ static int function_redis_command(struct ast_channel *chan, const char *cmd,
             pbx_builtin_setvar_helper(chan, "REDIS_ERROR", "Error in reply as str");
         }
     }
+
+    freeReplyObject(reply);
     pbx_builtin_setvar_helper(chan, "REDIS_RESULT", return_buffer);
 
     return 0;
@@ -760,6 +766,8 @@ static int function_redis_exists(struct ast_channel *chan, const char *cmd,
         ast_log(AST_LOG_WARNING, "REDIS EXIST failed\n");
         strncpy(return_buffer, "0", rtn_buff_len);
     }
+
+    freeReplyObject(reply);
     pbx_builtin_setvar_helper(chan, "REDIS_RESULT", return_buffer);
 
     return 0;
@@ -948,7 +956,7 @@ static char *handle_cli_redis_show(struct ast_cli_entry *e, int cmd, struct ast_
         for (i = 0; i < reply->elements; i++) {
             get_reply = redisLoggedCommand(redis_context, "GET %s", reply->element[i]->str);
             if (get_reply != NULL) {
-                if (replyHaveError(reply)) {
+                if (replyHaveError(get_reply)) {
                     ast_cli(args->fd, "%s\n", reply->str);
                 } else {
                     char *value = get_reply_value_as_str(get_reply);
