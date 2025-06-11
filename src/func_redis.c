@@ -957,7 +957,7 @@ static char *handle_cli_redis_show(struct ast_cli_entry *e, int cmd, struct ast_
             get_reply = redisLoggedCommand(redis_context, "GET %s", reply->element[i]->str);
             if (get_reply != NULL) {
                 if (replyHaveError(get_reply)) {
-                    ast_cli(args->fd, "%s\n", reply->str);
+                    ast_cli(args->fd, "%s\n", get_reply->str);
                 } else {
                     char *value = get_reply_value_as_str(get_reply);
                     if (value) {
