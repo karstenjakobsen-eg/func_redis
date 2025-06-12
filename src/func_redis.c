@@ -966,14 +966,13 @@ static char *handle_cli_redis_show(struct ast_cli_entry *e, int cmd, struct ast_
                 } else {
                     char *value = get_reply_value_as_str(get_reply);
                     if (value) {
-                        ast_cli(args->fd, "%-50s: %-25s\n", reply->element[i]->str, value);
+                        ast_cli(args->fd, "%-50s: %-25s\n", get_reply->element[i]->str, value);
                         ast_free(value);
                     }
                 }
+                freeReplyObject(get_reply);
             }
-            freeReplyObject(get_reply);
         }
-
         ast_cli(args->fd, "%d results found.\n", (int) reply->elements);
     }
     freeReplyObject(reply);
