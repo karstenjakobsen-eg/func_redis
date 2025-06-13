@@ -309,6 +309,8 @@ static char * get_reply_value_as_str(redisReply *reply){
                         snprintf(value, value_new_sz, "%s,%s", old_value, element_value);
                         ast_free(old_value);
                     }
+
+                    ast_free(element_value);
                 }
 
                 break;
@@ -323,17 +325,35 @@ static char * get_reply_value_as_str(redisReply *reply){
 }
 
 static void get_reply_value_for_hash(redisReply *reply, char **colnames, char **value) {
+
+    /* Initialize outputs */
+    *colnames = NULL;
+    *value = NULL;
+
+    /* Handle NULL reply case */
+    if (reply == NULL) {
+        ast_debug(1, "NULL reply passed to get_reply_value_for_hash()\n");
+        return;
+    }
+
     if (reply != NULL) {
         for(size_t i = 0; i < reply->elements; ++i) {
             char * old_value = NULL;
             redisReply * element = reply->element[i];
 
-            char * element_value = get_reply_value_as_str(element);
+            char *element_value = get_reply_value_as_str(element);
             size_t element_sz = (size_t)element->len;
 
             if (i == 0) {
                 size_t value_sz = element_sz + 1;
                 *colnames = (char*)ast_malloc(value_sz);
+
+                if (!*colnames) {
+                    ast_log(LOG_ERROR, "Memory allocation failed\n");
+                    ast_free(element_value);
+                    return;
+                }
+
                 snprintf(*colnames, value_sz, "%s", element_value);
             }
             else if (i == 1) {
@@ -358,6 +378,7 @@ static void get_reply_value_for_hash(redisReply *reply, char **colnames, char **
 
                 ast_free(old_value);
             }
+            ast_free(element_value);
         }
     }
 
@@ -559,7 +580,7 @@ static int function_redis_get_hash(struct ast_channel *chan, const char *cmd,
     } else {
         char * value = NULL;
         char * colnames = NULL;
-        
+    
         get_reply_value_for_hash(reply, &colnames, &value);
         
         if(value && colnames) {
